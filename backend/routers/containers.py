@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 import docker
+from docker.errors import ImageNotFound, APIError
 from datetime import datetime
 import traceback
+import random
 
 from database import get_db
 from models import User, Container, ContainerMetric
@@ -28,6 +30,61 @@ def get_docker_client():
             detail=f"Docker connection failed: {str(e)}"
         )
 
+def find_available_port(client, requested_host_port):
+    """Find available port if requested one is taken"""
+    try:
+        containers = client.containers.list()
+        used_ports = set()
+        
+        for container in containers:
+            if container.ports:
+                for port_info in container.ports.values():
+                    if port_info and isinstance(port_info, list):
+                        for info in port_info:
+                            if 'HostPort' in info:
+                                used_ports.add(int(info['HostPort']))
+        
+        # If requested port is available, use it
+        if int(requested_host_port) not in used_ports:
+            return int(requested_host_port)
+        
+        # Find available port starting from requested
+        port = int(requested_host_port) + 1
+        max_attempts = 100
+        attempts = 0
+        
+        while port in used_ports and attempts < max_attempts:
+            port += 1
+            attempts += 1
+        
+        if attempts >= max_attempts:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not find available port near {requested_host_port}. Ports {requested_host_port} to {requested_host_port + 100} are all in use."
+            )
+        
+        print(f"⚠️  Port {requested_host_port} is in use, using {port} instead")
+        return port
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"⚠️  Could not check port availability: {str(e)}, using requested port")
+        return int(requested_host_port)
+
+def login_to_registry(client, registry_url, username, password):
+    """Login to private Docker registry"""
+    try:
+        print(f"🔐 Logging in to registry: {registry_url}")
+        response = client.login(username=username, password=password, registry=registry_url)
+        print(f"✅ Registry login successful")
+        return True
+    except Exception as e:
+        print(f"❌ Registry login failed: {str(e)}")
+        raise HTTPException(
+            status_code=401,
+            detail=f"Private registry authentication failed: {str(e)}"
+        )
+
 @router.post("/deploy", response_model=ContainerResponse)
 def deploy_container(
     container_data: ContainerCreate,
@@ -36,30 +93,56 @@ def deploy_container(
 ):
     try:
         print(f"\n🚀 Deploy request received for: {container_data.name}")
+        print(f"📦 Image: {container_data.image}")
         docker_client = get_docker_client()
         
-        # Pull image if not exists
-        print(f"📦 Checking image: {container_data.image}")
+        # Handle private registry login if credentials provided
+        if container_data.registry_username and container_data.registry_password:
+            login_to_registry(
+                docker_client,
+                container_data.registry_url or "docker.io",
+                container_data.registry_username,
+                container_data.registry_password
+            )
+        
+        # Pull image
+        print(f"📦 Checking/pulling image: {container_data.image}")
         try:
             docker_client.images.get(container_data.image)
-            print(f"✅ Image {container_data.image} already exists")
-        except docker.errors.ImageNotFound:
-            print(f"⬇️  Pulling image {container_data.image}...")
-            docker_client.images.pull(container_data.image)
-            print(f"✅ Image {container_data.image} pulled successfully")
+            print(f"✅ Image {container_data.image} already exists locally")
+        except ImageNotFound:
+            print(f"⬇️  Pulling image {container_data.image} from registry...")
+            try:
+                docker_client.images.pull(container_data.image)
+                print(f"✅ Image {container_data.image} pulled successfully")
+            except Exception as pull_error:
+                print(f"❌ Failed to pull image: {str(pull_error)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to pull image '{container_data.image}'. Check image name and registry credentials."
+                )
         
-        # Parse port mapping - handle both string and dict
+        # Parse port mapping
         ports = {}
+        actual_ports_str = container_data.ports
+        
         if container_data.ports:
             if isinstance(container_data.ports, str):
                 port_parts = container_data.ports.split(":")
                 if len(port_parts) == 2:
                     container_port = port_parts[0]
                     host_port = port_parts[1]
-                    ports = {f"{container_port}/tcp": int(host_port)}
+                    
+                    # Check if port is available
+                    available_port = find_available_port(docker_client, host_port)
+                    ports = {f"{container_port}/tcp": int(available_port)}
+                    
+                    # Update the ports string to reflect actual port used
+                    actual_ports_str = f"{container_port}:{available_port}"
+                    print(f"🔌 Port mapping: {ports}")
             elif isinstance(container_data.ports, dict):
                 ports = container_data.ports
-            print(f"🔌 Port mapping: {ports}")
+                print(f"🔌 Port mapping: {ports}")
         
         # Create container
         print(f"🏗️  Creating container: {container_data.name}")
@@ -70,13 +153,11 @@ def deploy_container(
             environment=container_data.environment or {},
             cpu_quota=int(container_data.cpu_limit * 100000) if container_data.cpu_limit else None,
             mem_limit=container_data.memory_limit if container_data.memory_limit else None,
-            detach=True
+            detach=True,
+            restart_policy={"Name": "unless-stopped"}
         )
         
         print(f"✅ Container created: {docker_container.id[:12]}")
-        
-        # Convert ports back to string for database
-        ports_str = container_data.ports if isinstance(container_data.ports, str) else str(container_data.ports)
         
         # Save to database
         db_container = Container(
@@ -84,7 +165,7 @@ def deploy_container(
             name=container_data.name,
             image=container_data.image,
             status="running",
-            ports=ports_str,
+            ports=actual_ports_str,
             environment=container_data.environment,
             cpu_limit=container_data.cpu_limit,
             memory_limit=container_data.memory_limit,
@@ -251,6 +332,7 @@ def delete_container(
         docker_container = docker_client.containers.get(container.container_id)
         docker_container.stop()
         docker_container.remove()
+        print(f"🗑️  Container {container.name} deleted")
     except:
         pass
     

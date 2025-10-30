@@ -34,17 +34,21 @@ class Token(BaseModel):
     token_type: str
     user: UserResponse
 
-# Container Schemas
+# Container Schemas - UPDATED for custom images
 class ContainerCreate(BaseModel):
     name: str
-    image: str
+    image: str  # Custom image name from DockerHub or registry
     ports: Optional[str] = None
     environment: Optional[Dict[str, Any]] = None
     cpu_limit: Optional[float] = None
     memory_limit: Optional[str] = None
+    # Optional registry credentials for private images
+    registry_username: Optional[str] = None
+    registry_password: Optional[str] = None
+    registry_url: Optional[str] = "docker.io"  # Default to DockerHub
 
     class Config:
-        extra = "allow"  # Allow extra fields
+        extra = "allow"
 
 class ContainerResponse(BaseModel):
     id: int
