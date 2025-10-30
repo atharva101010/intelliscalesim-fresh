@@ -5,19 +5,18 @@ from database import get_db
 from datetime import datetime
 import logging
 import random
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/load-testing", tags=["load-testing"])
 
-# Pydantic model for request
 class LoadTestRequest(BaseModel):
     container_id: str
     total_requests: int = 500
     concurrency: int = 10
     duration: int = 30
 
-# In-memory storage for load tests
 load_tests = {}
 
 class LoadTest:
@@ -50,7 +49,7 @@ async def run_load_test(
     request: LoadTestRequest,
     db: Session = Depends(get_db)
 ):
-    """Run a load test on a container"""
+    """Run a load test on a container that respects duration"""
     try:
         # Validate inputs
         if request.total_requests < 1 or request.total_requests > 10000:
@@ -72,42 +71,69 @@ async def run_load_test(
             duration=request.duration
         )
         
-        # Simulate test execution
         test.status = "running"
+        load_tests[test_id] = test
         
-        # Generate mock results
-        successful_requests = int(request.total_requests * 0.95)
-        failed_requests = request.total_requests - successful_requests
+        # Simulate load test: spread requests evenly over the duration
+        requests_per_second = request.total_requests / request.duration
         
+        # Collect metrics
+        response_times = []
+        successful_requests = 0
+        failed_requests = 0
+        errors = {"timeout": 0, "connection_error": 0, "server_error": 0}
+        
+        # Simulate requests being sent across full duration
+        for second in range(request.duration):
+            requests_this_second = int(requests_per_second)
+            
+            # Send requests
+            for _ in range(requests_this_second):
+                response_time = random.uniform(50, 500)
+                response_times.append(response_time)
+                
+                # Simulate success/failure
+                rand = random.random()
+                if rand < 0.95:
+                    successful_requests += 1
+                elif rand < 0.97:
+                    failed_requests += 1
+                    errors["timeout"] += 1
+                elif rand < 0.99:
+                    failed_requests += 1
+                    errors["connection_error"] += 1
+                else:
+                    failed_requests += 1
+                    errors["server_error"] += 1
+            
+            # Simulate concurrent processing delay
+            await asyncio.sleep(0.1)
+        
+        # Calculate final statistics
         test.results = {
             "total_requests": request.total_requests,
             "successful_requests": successful_requests,
             "failed_requests": failed_requests,
-            "success_rate": round((successful_requests / request.total_requests) * 100, 2),
-            "avg_response_time": round(random.uniform(50, 500), 2),
-            "min_response_time": round(random.uniform(10, 50), 2),
-            "max_response_time": round(random.uniform(500, 2000), 2),
+            "success_rate": round((successful_requests / request.total_requests) * 100, 2) if request.total_requests > 0 else 0,
+            "avg_response_time": round(sum(response_times) / len(response_times), 2) if response_times else 0,
+            "min_response_time": round(min(response_times), 2) if response_times else 0,
+            "max_response_time": round(max(response_times), 2) if response_times else 0,
             "requests_per_second": round(request.total_requests / request.duration, 2),
             "total_bandwidth": round(random.uniform(1000, 50000), 2),
-            "errors": {
-                "timeout": random.randint(0, 10),
-                "connection_error": random.randint(0, 5),
-                "server_error": random.randint(0, 10)
-            }
+            "errors": errors
         }
         
         test.status = "completed"
         test.completed_at = datetime.utcnow()
         
-        load_tests[test_id] = test
-        logger.info(f"Load test {test_id} completed for container {request.container_id}")
+        logger.info(f"✅ Load test {test_id} completed for {request.container_id}")
         
         return test.to_dict()
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error running load test: {str(e)}")
+        logger.error(f"❌ Error running load test: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/tests")

@@ -1,515 +1,224 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from typing import List, Optional
-import docker
-from docker.errors import ImageNotFound, APIError
-from datetime import datetime
-import traceback
-import subprocess
-import os
-import tempfile
+from fastapi import APIRouter, HTTPException
+from docker import DockerClient
+from docker.errors import DockerException
+import logging
 
-from database import get_db
-from models import User, Container, ContainerMetric
-from schemas import ContainerCreate, ContainerResponse, ContainerMetricResponse
-from auth import get_current_user
+logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/containers", tags=["Containers"])
+router = APIRouter(prefix="/api/containers", tags=["containers"])
 
-def get_docker_client():
-    """Get Docker client with error handling"""
-    try:
-        print("🐳 Attempting to connect to Docker...")
-        client = docker.from_env()
-        client.ping()
-        print("✅ Docker connection successful!")
-        return client
-    except Exception as e:
-        print(f"❌ Docker connection failed: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Docker connection failed: {str(e)}"
-        )
+# Initialize Docker client
+try:
+    docker_client = DockerClient(base_url='unix:///var/run/docker.sock')
+    logger.info("✅ Docker client connected successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to connect to Docker: {str(e)}")
+    docker_client = None
 
-def find_available_port(client, requested_host_port):
-    """Find available port if requested one is taken"""
-    try:
-        # Reserved ports (backend runs on 8000)
-        reserved_ports = {8000, 3000, 5000}
-        
-        containers = client.containers.list()
-        used_ports = set(reserved_ports)
-        
-        for container in containers:
-            if container.ports:
-                for port_info in container.ports.values():
-                    if port_info and isinstance(port_info, list):
-                        for info in port_info:
-                            if 'HostPort' in info:
-                                used_ports.add(int(info['HostPort']))
-        
-        print(f"🔍 Used ports: {sorted(used_ports)}")
-        
-        if int(requested_host_port) not in used_ports:
-            return int(requested_host_port)
-        
-        port = int(requested_host_port) + 1
-        max_attempts = 1000
-        attempts = 0
-        
-        while port in used_ports and attempts < max_attempts:
-            port += 1
-            attempts += 1
-        
-        if attempts >= max_attempts:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Could not find available port near {requested_host_port}"
-            )
-        
-        print(f"⚠️  Port {requested_host_port} is in use, using {port} instead")
-        return port
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"⚠️  Could not check port availability: {str(e)}")
-        return int(requested_host_port)
-
-def login_to_registry(client, registry_url, username, password):
-    """Login to private Docker registry"""
-    try:
-        print(f"🔐 Logging in to registry: {registry_url}")
-        response = client.login(username=username, password=password, registry=registry_url)
-        print(f"✅ Registry login successful")
-        return True
-    except Exception as e:
-        print(f"❌ Registry login failed: {str(e)}")
-        raise HTTPException(
-            status_code=401,
-            detail=f"Private registry authentication failed: {str(e)}"
-        )
-
-def build_from_github(
-    client,
-    github_url: str,
-    github_branch: str,
-    dockerfile_path: str,
-    image_name: str,
-    github_username: Optional[str] = None,
-    github_token: Optional[str] = None
-):
-    """Clone GitHub repo and build Docker image"""
-    try:
-        print(f"📦 Building Docker image from GitHub: {github_url}")
-        
-        # Clean up the URL - remove extra spaces
-        github_url = github_url.strip()
-        
-        # Create temporary directory for cloning
-        with tempfile.TemporaryDirectory() as tmpdir:
-            print(f"📁 Cloning repository to {tmpdir}")
-            
-            # Prepare git URL with credentials if provided
-            if github_username and github_token:
-                # Use token-based authentication
-                git_url = github_url.replace("https://", f"https://{github_username}:{github_token}@")
-                git_url = git_url.replace("http://", f"http://{github_username}:{github_token}@")
-            else:
-                git_url = github_url
-            
-            print(f"🔗 Git URL: {git_url}")
-            
-            # Clone repository
-            clone_result = subprocess.run(
-                ["git", "clone", "--branch", github_branch, git_url, tmpdir],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            
-            if clone_result.returncode != 0:
-                print(f"❌ Git clone failed: {clone_result.stderr}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to clone GitHub repository: {clone_result.stderr}"
-                )
-            
-            print(f"✅ Repository cloned successfully")
-            
-            # Find Dockerfile
-            dockerfile_full_path = os.path.join(tmpdir, dockerfile_path)
-            if not os.path.exists(dockerfile_full_path):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Dockerfile not found at path: {dockerfile_path}"
-                )
-            
-            print(f"📝 Found Dockerfile at {dockerfile_path}")
-            
-            # Build Docker image
-            print(f"🔨 Building Docker image: {image_name}")
-            build_result = client.images.build(
-                path=tmpdir,
-                dockerfile=dockerfile_path,
-                tag=image_name,
-                rm=True
-            )
-            
-            print(f"✅ Docker image built successfully: {image_name}")
-            return image_name
-            
-    except HTTPException:
-        raise
-    except subprocess.TimeoutExpired:
-        raise HTTPException(
-            status_code=400,
-            detail="Git clone timeout - repository too large or network issue"
-        )
-    except Exception as e:
-        print(f"❌ Error building from GitHub: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to build image from GitHub: {str(e)}"
-        )
-
-@router.post("/deploy", response_model=ContainerResponse)
-def deploy_container(
-    container_data: ContainerCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    try:
-        print(f"\n🚀 Deploy request received for: {container_data.name}")
-        docker_client = get_docker_client()
-        
-        # Determine deployment source
-        if container_data.github_url:
-            print(f"🐙 GitHub deployment mode: {container_data.github_url}")
-            # Build image from GitHub
-            image_name = f"{container_data.name}:latest"
-            build_from_github(
-                docker_client,
-                container_data.github_url,
-                container_data.github_branch or "main",
-                container_data.dockerfile_path or "Dockerfile",
-                image_name,
-                container_data.github_username,
-                container_data.github_token
-            )
-            final_image = image_name
-        else:
-            print(f"📦 Docker image deployment mode: {container_data.image}")
-            if not container_data.image:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Either 'image' or 'github_url' must be provided"
-                )
-            
-            # Handle private registry login
-            if container_data.registry_username and container_data.registry_password:
-                login_to_registry(
-                    docker_client,
-                    container_data.registry_url or "docker.io",
-                    container_data.registry_username,
-                    container_data.registry_password
-                )
-            
-            # Pull image
-            print(f"📦 Checking/pulling image: {container_data.image}")
-            try:
-                docker_client.images.get(container_data.image)
-                print(f"✅ Image {container_data.image} already exists locally")
-            except ImageNotFound:
-                print(f"⬇️  Pulling image {container_data.image} from registry...")
-                try:
-                    docker_client.images.pull(container_data.image)
-                    print(f"✅ Image {container_data.image} pulled successfully")
-                except Exception as pull_error:
-                    print(f"❌ Failed to pull image: {str(pull_error)}")
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Failed to pull image '{container_data.image}'. Check image name and registry credentials."
-                    )
-            
-            final_image = container_data.image
-        
-        # Parse port mapping
+class ContainerInfo:
+    def __init__(self, container):
+        self.id = container.id[:12]
+        self.name = container.name
+        self.image = container.image.tags[0] if container.image.tags else container.image.id[:12]
+        self.status = container.status
+        self.state = container.attrs['State']['Status']
+        self.ports = self._extract_ports(container)
+    
+    def _extract_ports(self, container):
+        """Extract port information from container"""
         ports = {}
-        actual_ports_str = container_data.ports
+        if container.ports:
+            for port, mapping in container.ports.items():
+                if mapping:
+                    host_port = mapping[0]['HostPort']
+                    ports[port] = host_port
+        return ports
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "image": self.image,
+            "status": self.status,
+            "state": self.state,
+            "ports": self.ports
+        }
+
+@router.get("/list")
+async def list_containers():
+    """Get all running Docker containers"""
+    if not docker_client:
+        raise HTTPException(
+            status_code=500, 
+            detail="Docker daemon is not accessible. Make sure Docker is running."
+        )
+    
+    try:
+        containers = docker_client.containers.list(all=False)  # Only running containers
         
-        if container_data.ports:
-            if isinstance(container_data.ports, str):
-                port_parts = container_data.ports.split(":")
-                if len(port_parts) == 2:
-                    container_port = port_parts[0]
-                    host_port = port_parts[1]
-                    available_port = find_available_port(docker_client, host_port)
-                    ports = {f"{container_port}/tcp": int(available_port)}
-                    actual_ports_str = f"{container_port}:{available_port}"
-                    print(f"🔌 Port mapping: {ports}")
+        container_list = []
+        for container in containers:
+            try:
+                info = ContainerInfo(container)
+                container_list.append(info.to_dict())
+            except Exception as e:
+                logger.warning(f"Failed to process container {container.name}: {str(e)}")
+                continue
         
-        # Create container
-        print(f"🏗️  Creating container: {container_data.name}")
-        docker_container = docker_client.containers.run(
-            final_image,
-            name=container_data.name,
-            ports=ports if ports else None,
-            environment=container_data.environment or {},
-            cpu_quota=int(container_data.cpu_limit * 100000) if container_data.cpu_limit else None,
-            mem_limit=container_data.memory_limit if container_data.memory_limit else None,
+        logger.info(f"✅ Found {len(container_list)} running containers")
+        return {
+            "success": True,
+            "count": len(container_list),
+            "containers": container_list
+        }
+    
+    except DockerException as e:
+        logger.error(f"❌ Docker error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Error listing containers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/get/{container_name}")
+async def get_container(container_name: str):
+    """Get details for a specific container"""
+    if not docker_client:
+        raise HTTPException(status_code=500, detail="Docker daemon is not accessible")
+    
+    try:
+        container = docker_client.containers.get(container_name)
+        info = ContainerInfo(container)
+        return info.to_dict()
+    
+    except DockerException as e:
+        logger.error(f"❌ Container not found: {container_name}")
+        raise HTTPException(status_code=404, detail=f"Container not found: {container_name}")
+    except Exception as e:
+        logger.error(f"❌ Error getting container: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/stats/{container_id}")
+async def get_container_stats(container_id: str):
+    """Get real-time stats for a container"""
+    if not docker_client:
+        raise HTTPException(status_code=500, detail="Docker daemon is not accessible")
+    
+    try:
+        container = docker_client.containers.get(container_id)
+        
+        # Get stats (non-blocking)
+        stats = container.stats(stream=False)
+        
+        # Extract CPU and memory metrics
+        cpu_percent = 0.0
+        memory_usage = 0
+        memory_limit = 0
+        
+        if stats:
+            # Calculate CPU percentage
+            cpu_delta = stats['cpu_stats'].get('cpu_usage', {}).get('total_usage', 0) - \
+                       stats['precpu_stats'].get('cpu_usage', {}).get('total_usage', 0)
+            system_delta = stats['cpu_stats'].get('system_cpu_usage', 0) - \
+                          stats['precpu_stats'].get('system_cpu_usage', 0)
+            
+            if system_delta > 0:
+                cpu_percent = (cpu_delta / system_delta) * 100.0
+            
+            # Get memory usage
+            memory_usage = stats['memory_stats'].get('usage', 0)
+            memory_limit = stats['memory_stats'].get('limit', 0)
+        
+        return {
+            "container_id": container_id,
+            "name": container.name,
+            "cpu_percent": round(cpu_percent, 2),
+            "memory_usage": memory_usage,
+            "memory_limit": memory_limit,
+            "memory_percent": round((memory_usage / memory_limit) * 100, 2) if memory_limit > 0 else 0
+        }
+    
+    except DockerException as e:
+        logger.error(f"❌ Container not found: {container_id}")
+        raise HTTPException(status_code=404, detail=f"Container not found: {container_id}")
+    except Exception as e:
+        logger.error(f"❌ Error getting container stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/health")
+async def check_docker_health():
+    """Check if Docker daemon is running"""
+    if not docker_client:
+        return {"docker_running": False, "message": "Docker client not initialized"}
+    
+    try:
+        docker_client.ping()
+        return {"docker_running": True, "message": "Docker daemon is healthy"}
+    except Exception as e:
+        logger.error(f"❌ Docker health check failed: {str(e)}")
+        return {"docker_running": False, "message": str(e)}
+
+@router.post("/deploy")
+async def deploy_container(request: dict):
+    """Deploy a new container"""
+    if not docker_client:
+        raise HTTPException(status_code=500, detail="Docker daemon is not accessible")
+    
+    try:
+        image = request.get('image')
+        container_name = request.get('container_name')
+        ports = request.get('ports', {})  # e.g., {"80/tcp": 8080}
+        
+        if not image or not container_name:
+            raise HTTPException(status_code=400, detail="Image and container name are required")
+        
+        # Pull image if not exists
+        try:
+            docker_client.images.pull(image)
+            logger.info(f"✅ Pulled image: {image}")
+        except Exception as e:
+            logger.warning(f"Image may already exist: {str(e)}")
+        
+        # Deploy container
+        container = docker_client.containers.run(
+            image,
+            name=container_name,
+            ports=ports,
             detach=True,
             restart_policy={"Name": "unless-stopped"}
         )
         
-        print(f"✅ Container created: {docker_container.id[:12]}")
+        logger.info(f"✅ Container deployed: {container_name}")
         
-        # Save to database
-        db_container = Container(
-            container_id=docker_container.id,
-            name=container_data.name,
-            image=final_image,
-            status="running",
-            ports=actual_ports_str,
-            environment=container_data.environment,
-            cpu_limit=container_data.cpu_limit,
-            memory_limit=container_data.memory_limit,
-            user_id=current_user.id
-        )
-        db.add(db_container)
-        db.commit()
-        db.refresh(db_container)
-        
-        print(f"💾 Container saved to database: ID={db_container.id}")
-        return db_container
-        
-    except HTTPException:
-        raise
+        return {
+            "success": True,
+            "container_id": container.id[:12],
+            "container_name": container_name,
+            "message": f"Container {container_name} deployed successfully!"
+        }
+    
     except Exception as e:
-        print(f"❌ Error in deploy_container: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to deploy container: {str(e)}")
-
-@router.get("/", response_model=List[ContainerResponse])
-def list_containers(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    try:
-        print(f"\n📋 List containers request for user: {current_user.username}")
-        docker_client = get_docker_client()
-        containers = db.query(Container).filter(Container.user_id == current_user.id).all()
-        
-        print(f"📊 Found {len(containers)} containers in database")
-        
-        for container in containers:
-            try:
-                docker_container = docker_client.containers.get(container.container_id)
-                container.status = docker_container.status
-                print(f"  - {container.name}: {container.status}")
-            except Exception as e:
-                print(f"  - {container.name}: removed")
-                container.status = "removed"
-        db.commit()
-        
-        return containers
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Error in list_containers: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to list containers: {str(e)}")
-
-@router.get("/{container_id}", response_model=ContainerResponse)
-def get_container(
-    container_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    docker_client = get_docker_client()
-    container = db.query(Container).filter(
-        Container.id == container_id,
-        Container.user_id == current_user.id
-    ).first()
-    
-    if not container:
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        docker_container = docker_client.containers.get(container.container_id)
-        container.status = docker_container.status
-        db.commit()
-    except:
-        container.status = "removed"
-    
-    return container
-
-@router.post("/{container_id}/start")
-def start_container(
-    container_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    docker_client = get_docker_client()
-    container = db.query(Container).filter(
-        Container.id == container_id,
-        Container.user_id == current_user.id
-    ).first()
-    
-    if not container:
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        docker_container = docker_client.containers.get(container.container_id)
-        docker_container.start()
-        container.status = "running"
-        db.commit()
-        return {"message": "Container started", "status": "running"}
-    except Exception as e:
+        logger.error(f"❌ Error deploying container: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/{container_id}/stop")
-def stop_container(
-    container_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    docker_client = get_docker_client()
-    container = db.query(Container).filter(
-        Container.id == container_id,
-        Container.user_id == current_user.id
-    ).first()
-    
-    if not container:
-        raise HTTPException(status_code=404, detail="Container not found")
+@router.delete("/delete/{container_name}")
+async def delete_container(container_name: str):
+    """Delete/stop a container"""
+    if not docker_client:
+        raise HTTPException(status_code=500, detail="Docker daemon is not accessible")
     
     try:
-        docker_container = docker_client.containers.get(container.container_id)
-        docker_container.stop()
-        container.status = "exited"
-        db.commit()
-        return {"message": "Container stopped", "status": "exited"}
+        container = docker_client.containers.get(container_name)
+        container.stop()
+        container.remove()
+        
+        logger.info(f"✅ Container deleted: {container_name}")
+        
+        return {
+            "success": True,
+            "message": f"Container {container_name} deleted successfully!"
+        }
+    
     except Exception as e:
+        logger.error(f"❌ Error deleting container: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/{container_id}/restart")
-def restart_container(
-    container_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    docker_client = get_docker_client()
-    container = db.query(Container).filter(
-        Container.id == container_id,
-        Container.user_id == current_user.id
-    ).first()
-    
-    if not container:
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        docker_container = docker_client.containers.get(container.container_id)
-        docker_container.restart()
-        container.status = "running"
-        db.commit()
-        return {"message": "Container restarted", "status": "running"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/{container_id}")
-def delete_container(
-    container_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    docker_client = get_docker_client()
-    container = db.query(Container).filter(
-        Container.id == container_id,
-        Container.user_id == current_user.id
-    ).first()
-    
-    if not container:
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        docker_container = docker_client.containers.get(container.container_id)
-        docker_container.stop()
-        docker_container.remove()
-        print(f"🗑️  Container {container.name} deleted")
-    except:
-        pass
-    
-    db.delete(container)
-    db.commit()
-    return {"message": "Container deleted"}
-
-@router.get("/{container_id}/metrics", response_model=ContainerMetricResponse)
-def get_container_metrics(
-    container_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    docker_client = get_docker_client()
-    container = db.query(Container).filter(
-        Container.id == container_id,
-        Container.user_id == current_user.id
-    ).first()
-    
-    if not container:
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        docker_container = docker_client.containers.get(container.container_id)
-        stats = docker_container.stats(stream=False)
-        
-        cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
-                   stats['precpu_stats']['cpu_usage']['total_usage']
-        system_delta = stats['cpu_stats']['system_cpu_usage'] - \
-                      stats['precpu_stats']['system_cpu_usage']
-        cpu_percent = (cpu_delta / system_delta) * len(stats['cpu_stats']['cpu_usage']['percpu_usage']) * 100.0
-        
-        memory_usage = stats['memory_stats']['usage']
-        memory_limit = stats['memory_stats']['limit']
-        memory_percent = (memory_usage / memory_limit) * 100.0
-        
-        network_rx = stats['networks']['eth0']['rx_bytes'] if 'eth0' in stats.get('networks', {}) else 0
-        network_tx = stats['networks']['eth0']['tx_bytes'] if 'eth0' in stats.get('networks', {}) else 0
-        
-        metric = ContainerMetric(
-            container_id=container.id,
-            cpu_usage=cpu_percent,
-            memory_usage=memory_percent,
-            network_rx=network_rx,
-            network_tx=network_tx
-        )
-        db.add(metric)
-        db.commit()
-        db.refresh(metric)
-        
-        return metric
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/{container_id}/logs")
-def get_container_logs(
-    container_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    docker_client = get_docker_client()
-    container = db.query(Container).filter(
-        Container.id == container_id,
-        Container.user_id == current_user.id
-    ).first()
-    
-    if not container:
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        docker_container = docker_client.containers.get(container.container_id)
-        logs = docker_container.logs(tail=100).decode('utf-8')
-        return {"logs": logs}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
