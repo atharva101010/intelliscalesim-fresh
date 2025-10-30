@@ -136,11 +136,24 @@ const Containers = () => {
     }
 
     try {
-      await api.delete(`/api/containers/delete/${containerName}`);
+      // Try normal delete first
+      await api.delete(`/api/containers/delete/${containerName}?force=false`);
       alert('Container deleted successfully');
       fetchContainers();
     } catch (err) {
-      alert('Failed to delete container: ' + (err.response?.data?.detail || err.message));
+      // If it fails due to restarting, try force delete
+      if (err.response?.data?.detail?.includes('restarting')) {
+        try {
+          console.log('Attempting force delete...');
+          await api.delete(`/api/containers/delete/${containerName}?force=true`);
+          alert('Container force deleted successfully');
+          fetchContainers();
+        } catch (retryErr) {
+          alert('Failed to delete container: ' + (retryErr.response?.data?.detail || retryErr.message));
+        }
+      } else {
+        alert('Failed to delete container: ' + (err.response?.data?.detail || err.message));
+      }
     }
   };
 
@@ -492,6 +505,7 @@ const Containers = () => {
                   <li>postgres:15 - PostgreSQL database</li>
                   <li>redis:latest - Redis cache</li>
                   <li>python:3.12 - Python runtime</li>
+                  <li>ubuntu:22.04 - Ubuntu OS</li>
                 </ul>
               </div>
             </div>

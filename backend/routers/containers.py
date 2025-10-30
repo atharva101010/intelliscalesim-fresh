@@ -334,20 +334,28 @@ async def stop_container(container_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/delete/{container_name}")
-async def delete_container(container_name: str):
-    """Delete/remove a container"""
+async def delete_container(container_name: str, force: bool = False):
+    """Delete/remove a container with optional force remove"""
     if not docker_client:
         raise HTTPException(status_code=500, detail="Docker daemon is not accessible")
     
     try:
         container = docker_client.containers.get(container_name)
         
-        if container.status == 'running':
-            container.stop()
-        
-        container.remove()
-        
-        logger.info(f"✅ Container deleted: {container_name}")
+        # Force remove if requested or if container is stuck in restarting state
+        if force or container.status in ['restarting', 'removing']:
+            logger.info(f"🔨 Force removing container: {container_name}")
+            container.remove(force=True)
+            logger.info(f"✅ Container force deleted: {container_name}")
+        else:
+            # Try graceful stop first
+            if container.status == 'running':
+                container.stop()
+                logger.info(f"⏹️ Stopped container: {container_name}")
+            
+            # Then remove
+            container.remove()
+            logger.info(f"✅ Container deleted: {container_name}")
         
         return {
             "success": True,
