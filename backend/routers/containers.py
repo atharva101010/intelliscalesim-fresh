@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import docker
 from docker.errors import ImageNotFound, APIError
 from datetime import datetime
 import traceback
-import random
+import subprocess
+import os
+import tempfile
 
 from database import get_db
 from models import User, Container, ContainerMetric
@@ -33,8 +35,11 @@ def get_docker_client():
 def find_available_port(client, requested_host_port):
     """Find available port if requested one is taken"""
     try:
+        # Reserved ports (backend runs on 8000)
+        reserved_ports = {8000, 3000, 5000}
+        
         containers = client.containers.list()
-        used_ports = set()
+        used_ports = set(reserved_ports)
         
         for container in containers:
             if container.ports:
@@ -44,13 +49,13 @@ def find_available_port(client, requested_host_port):
                             if 'HostPort' in info:
                                 used_ports.add(int(info['HostPort']))
         
-        # If requested port is available, use it
+        print(f"🔍 Used ports: {sorted(used_ports)}")
+        
         if int(requested_host_port) not in used_ports:
             return int(requested_host_port)
         
-        # Find available port starting from requested
         port = int(requested_host_port) + 1
-        max_attempts = 100
+        max_attempts = 1000
         attempts = 0
         
         while port in used_ports and attempts < max_attempts:
@@ -60,7 +65,7 @@ def find_available_port(client, requested_host_port):
         if attempts >= max_attempts:
             raise HTTPException(
                 status_code=400,
-                detail=f"Could not find available port near {requested_host_port}. Ports {requested_host_port} to {requested_host_port + 100} are all in use."
+                detail=f"Could not find available port near {requested_host_port}"
             )
         
         print(f"⚠️  Port {requested_host_port} is in use, using {port} instead")
@@ -68,7 +73,7 @@ def find_available_port(client, requested_host_port):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"⚠️  Could not check port availability: {str(e)}, using requested port")
+        print(f"⚠️  Could not check port availability: {str(e)}")
         return int(requested_host_port)
 
 def login_to_registry(client, registry_url, username, password):
@@ -85,6 +90,90 @@ def login_to_registry(client, registry_url, username, password):
             detail=f"Private registry authentication failed: {str(e)}"
         )
 
+def build_from_github(
+    client,
+    github_url: str,
+    github_branch: str,
+    dockerfile_path: str,
+    image_name: str,
+    github_username: Optional[str] = None,
+    github_token: Optional[str] = None
+):
+    """Clone GitHub repo and build Docker image"""
+    try:
+        print(f"📦 Building Docker image from GitHub: {github_url}")
+        
+        # Clean up the URL - remove extra spaces
+        github_url = github_url.strip()
+        
+        # Create temporary directory for cloning
+        with tempfile.TemporaryDirectory() as tmpdir:
+            print(f"📁 Cloning repository to {tmpdir}")
+            
+            # Prepare git URL with credentials if provided
+            if github_username and github_token:
+                # Use token-based authentication
+                git_url = github_url.replace("https://", f"https://{github_username}:{github_token}@")
+                git_url = git_url.replace("http://", f"http://{github_username}:{github_token}@")
+            else:
+                git_url = github_url
+            
+            print(f"🔗 Git URL: {git_url}")
+            
+            # Clone repository
+            clone_result = subprocess.run(
+                ["git", "clone", "--branch", github_branch, git_url, tmpdir],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if clone_result.returncode != 0:
+                print(f"❌ Git clone failed: {clone_result.stderr}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to clone GitHub repository: {clone_result.stderr}"
+                )
+            
+            print(f"✅ Repository cloned successfully")
+            
+            # Find Dockerfile
+            dockerfile_full_path = os.path.join(tmpdir, dockerfile_path)
+            if not os.path.exists(dockerfile_full_path):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Dockerfile not found at path: {dockerfile_path}"
+                )
+            
+            print(f"📝 Found Dockerfile at {dockerfile_path}")
+            
+            # Build Docker image
+            print(f"🔨 Building Docker image: {image_name}")
+            build_result = client.images.build(
+                path=tmpdir,
+                dockerfile=dockerfile_path,
+                tag=image_name,
+                rm=True
+            )
+            
+            print(f"✅ Docker image built successfully: {image_name}")
+            return image_name
+            
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=400,
+            detail="Git clone timeout - repository too large or network issue"
+        )
+    except Exception as e:
+        print(f"❌ Error building from GitHub: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to build image from GitHub: {str(e)}"
+        )
+
 @router.post("/deploy", response_model=ContainerResponse)
 def deploy_container(
     container_data: ContainerCreate,
@@ -93,34 +182,58 @@ def deploy_container(
 ):
     try:
         print(f"\n🚀 Deploy request received for: {container_data.name}")
-        print(f"📦 Image: {container_data.image}")
         docker_client = get_docker_client()
         
-        # Handle private registry login if credentials provided
-        if container_data.registry_username and container_data.registry_password:
-            login_to_registry(
+        # Determine deployment source
+        if container_data.github_url:
+            print(f"🐙 GitHub deployment mode: {container_data.github_url}")
+            # Build image from GitHub
+            image_name = f"{container_data.name}:latest"
+            build_from_github(
                 docker_client,
-                container_data.registry_url or "docker.io",
-                container_data.registry_username,
-                container_data.registry_password
+                container_data.github_url,
+                container_data.github_branch or "main",
+                container_data.dockerfile_path or "Dockerfile",
+                image_name,
+                container_data.github_username,
+                container_data.github_token
             )
-        
-        # Pull image
-        print(f"📦 Checking/pulling image: {container_data.image}")
-        try:
-            docker_client.images.get(container_data.image)
-            print(f"✅ Image {container_data.image} already exists locally")
-        except ImageNotFound:
-            print(f"⬇️  Pulling image {container_data.image} from registry...")
-            try:
-                docker_client.images.pull(container_data.image)
-                print(f"✅ Image {container_data.image} pulled successfully")
-            except Exception as pull_error:
-                print(f"❌ Failed to pull image: {str(pull_error)}")
+            final_image = image_name
+        else:
+            print(f"📦 Docker image deployment mode: {container_data.image}")
+            if not container_data.image:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Failed to pull image '{container_data.image}'. Check image name and registry credentials."
+                    detail="Either 'image' or 'github_url' must be provided"
                 )
+            
+            # Handle private registry login
+            if container_data.registry_username and container_data.registry_password:
+                login_to_registry(
+                    docker_client,
+                    container_data.registry_url or "docker.io",
+                    container_data.registry_username,
+                    container_data.registry_password
+                )
+            
+            # Pull image
+            print(f"📦 Checking/pulling image: {container_data.image}")
+            try:
+                docker_client.images.get(container_data.image)
+                print(f"✅ Image {container_data.image} already exists locally")
+            except ImageNotFound:
+                print(f"⬇️  Pulling image {container_data.image} from registry...")
+                try:
+                    docker_client.images.pull(container_data.image)
+                    print(f"✅ Image {container_data.image} pulled successfully")
+                except Exception as pull_error:
+                    print(f"❌ Failed to pull image: {str(pull_error)}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to pull image '{container_data.image}'. Check image name and registry credentials."
+                    )
+            
+            final_image = container_data.image
         
         # Parse port mapping
         ports = {}
@@ -132,22 +245,15 @@ def deploy_container(
                 if len(port_parts) == 2:
                     container_port = port_parts[0]
                     host_port = port_parts[1]
-                    
-                    # Check if port is available
                     available_port = find_available_port(docker_client, host_port)
                     ports = {f"{container_port}/tcp": int(available_port)}
-                    
-                    # Update the ports string to reflect actual port used
                     actual_ports_str = f"{container_port}:{available_port}"
                     print(f"🔌 Port mapping: {ports}")
-            elif isinstance(container_data.ports, dict):
-                ports = container_data.ports
-                print(f"🔌 Port mapping: {ports}")
         
         # Create container
         print(f"🏗️  Creating container: {container_data.name}")
         docker_container = docker_client.containers.run(
-            container_data.image,
+            final_image,
             name=container_data.name,
             ports=ports if ports else None,
             environment=container_data.environment or {},
@@ -163,7 +269,7 @@ def deploy_container(
         db_container = Container(
             container_id=docker_container.id,
             name=container_data.name,
-            image=container_data.image,
+            image=final_image,
             status="running",
             ports=actual_ports_str,
             environment=container_data.environment,
@@ -197,7 +303,6 @@ def list_containers(
         
         print(f"📊 Found {len(containers)} containers in database")
         
-        # Update status from Docker
         for container in containers:
             try:
                 docker_container = docker_client.containers.get(container.container_id)

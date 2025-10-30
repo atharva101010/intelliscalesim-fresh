@@ -34,18 +34,29 @@ class Token(BaseModel):
     token_type: str
     user: UserResponse
 
-# Container Schemas - UPDATED for custom images
+# Container Schemas - UPDATED with GitHub support
 class ContainerCreate(BaseModel):
     name: str
-    image: str  # Custom image name from DockerHub or registry
+    # Docker image deployment
+    image: Optional[str] = None
+    # GitHub deployment
+    github_url: Optional[str] = None
+    github_branch: Optional[str] = "main"
+    dockerfile_path: Optional[str] = "Dockerfile"
+    
     ports: Optional[str] = None
     environment: Optional[Dict[str, Any]] = None
     cpu_limit: Optional[float] = None
     memory_limit: Optional[str] = None
-    # Optional registry credentials for private images
+    
+    # Registry credentials for private Docker images
     registry_username: Optional[str] = None
     registry_password: Optional[str] = None
-    registry_url: Optional[str] = "docker.io"  # Default to DockerHub
+    registry_url: Optional[str] = "docker.io"
+    
+    # GitHub credentials for private repos
+    github_username: Optional[str] = None
+    github_token: Optional[str] = None
 
     class Config:
         extra = "allow"
