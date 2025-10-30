@@ -13,7 +13,11 @@ const Containers = () => {
     image: 'nginx:latest',
     container_name: '',
     port_internal: '80',
-    port_external: '8080'
+    port_external: '8080',
+    use_private: false,
+    registry_username: '',
+    registry_password: '',
+    registry: 'docker.io'
   });
   const [deployMessage, setDeployMessage] = useState(null);
 
@@ -51,10 +55,10 @@ const Containers = () => {
   };
 
   const handleDeployFormChange = (e) => {
-    const { name, value } = e.target;
+    const { name, value, type, checked } = e.target;
     setDeployForm(prev => ({
       ...prev,
-      [name]: value
+      [name]: type === 'checkbox' ? checked : value
     }));
   };
 
@@ -73,11 +77,19 @@ const Containers = () => {
         ports[`${deployForm.port_internal}/tcp`] = parseInt(deployForm.port_external);
       }
 
-      const response = await api.post('/api/containers/deploy', {
+      const payload = {
         image: deployForm.image,
         container_name: deployForm.container_name,
         ports: ports
-      });
+      };
+
+      if (deployForm.use_private && deployForm.registry_username && deployForm.registry_password) {
+        payload.registry_username = deployForm.registry_username;
+        payload.registry_password = deployForm.registry_password;
+        payload.registry = deployForm.registry;
+      }
+
+      const response = await api.post('/api/containers/deploy', payload);
 
       setDeployMessage({
         type: 'success',
@@ -90,7 +102,11 @@ const Containers = () => {
           image: 'nginx:latest',
           container_name: '',
           port_internal: '80',
-          port_external: '8080'
+          port_external: '8080',
+          use_private: false,
+          registry_username: '',
+          registry_password: '',
+          registry: 'docker.io'
         });
         fetchContainers();
       }, 2000);
@@ -101,6 +117,16 @@ const Containers = () => {
       });
     } finally {
       setDeploying(false);
+    }
+  };
+
+  const handleContainerAction = async (containerName, action) => {
+    try {
+      await api.post(`/api/containers/${action}/${containerName}`);
+      alert(`Container ${action === 'resume' ? 'resumed' : action + 'ed'} successfully!`);
+      fetchContainers();
+    } catch (err) {
+      alert(`Failed to ${action} container: ` + (err.response?.data?.detail || err.message));
     }
   };
 
@@ -225,7 +251,7 @@ const Containers = () => {
                 <div className="card-header">
                   <h3>{container.name}</h3>
                   <span className={`status-badge status-${container.state}`}>
-                    {container.state === 'running' ? '✅ Running' : '⏹️ Stopped'}
+                    {container.state === 'running' ? '✅ Running' : container.state === 'paused' ? '⏸️ Paused' : '⏹️ Stopped'}
                   </span>
                 </div>
 
@@ -259,17 +285,69 @@ const Containers = () => {
                       </div>
                     </div>
                   )}
+
+                  {container.http_url && (
+                    <div className="card-section http-url-section">
+                      <span className="label">🌐 Access URL</span>
+                      <a 
+                        href={container.http_url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="http-link"
+                      >
+                        {container.http_url} 🔗
+                      </a>
+                    </div>
+                  )}
                 </div>
 
                 <div className="card-footer">
-                  <button className="btn btn-small btn-logs">📋 View Logs</button>
-                  <button className="btn btn-small btn-stats">📊 Statistics</button>
-                  <button 
-                    className="btn btn-small btn-delete"
-                    onClick={() => handleDeleteContainer(container.name)}
-                  >
-                    🗑️ Delete
-                  </button>
+                  <div className="footer-row">
+                    {container.state === 'running' ? (
+                      <>
+                        <button 
+                          className="btn btn-small btn-pause"
+                          onClick={() => handleContainerAction(container.name, 'pause')}
+                        >
+                          ⏸️ Pause
+                        </button>
+                        <button 
+                          className="btn btn-small btn-stop"
+                          onClick={() => handleContainerAction(container.name, 'stop')}
+                        >
+                          ⏹️ Stop
+                        </button>
+                      </>
+                    ) : container.state === 'paused' ? (
+                      <>
+                        <button 
+                          className="btn btn-small btn-resume"
+                          onClick={() => handleContainerAction(container.name, 'resume')}
+                        >
+                          ▶️ Resume
+                        </button>
+                        <button 
+                          className="btn btn-small btn-stop"
+                          onClick={() => handleContainerAction(container.name, 'stop')}
+                        >
+                          ⏹️ Stop
+                        </button>
+                      </>
+                    ) : (
+                      <button 
+                        className="btn btn-small btn-start"
+                        onClick={() => handleContainerAction(container.name, 'start')}
+                      >
+                        ▶️ Start
+                      </button>
+                    )}
+                    <button 
+                      className="btn btn-small btn-delete"
+                      onClick={() => handleDeleteContainer(container.name)}
+                    >
+                      🗑️ Delete
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -321,6 +399,66 @@ const Containers = () => {
                   disabled={deploying}
                 />
               </div>
+
+              {/* Private Registry Section */}
+              <div className="private-registry-section">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    name="use_private"
+                    checked={deployForm.use_private}
+                    onChange={handleDeployFormChange}
+                    disabled={deploying}
+                  />
+                  <span>🔐 Use Private Docker Hub</span>
+                </label>
+                <small>Enable if using private images</small>
+              </div>
+
+              {deployForm.use_private && (
+                <div className="private-credentials">
+                  <div className="form-group">
+                    <label>Docker Hub Username</label>
+                    <input
+                      type="text"
+                      name="registry_username"
+                      placeholder="your-username"
+                      value={deployForm.registry_username}
+                      onChange={handleDeployFormChange}
+                      disabled={deploying}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Docker Hub Password / Token</label>
+                    <input
+                      type="password"
+                      name="registry_password"
+                      placeholder="your-password-or-token"
+                      value={deployForm.registry_password}
+                      onChange={handleDeployFormChange}
+                      disabled={deploying}
+                    />
+                    <small>💡 Use a personal access token for better security</small>
+                  </div>
+
+                  <div className="form-group">
+                    <label>Registry (optional)</label>
+                    <input
+                      type="text"
+                      name="registry"
+                      placeholder="docker.io"
+                      value={deployForm.registry}
+                      onChange={handleDeployFormChange}
+                      disabled={deploying}
+                    />
+                  </div>
+
+                  <div className="security-notice">
+                    🔒 <strong>Security:</strong> Credentials are only used for pulling the image and are never stored.
+                  </div>
+                </div>
+              )}
 
               <div className="form-row">
                 <div className="form-group">
