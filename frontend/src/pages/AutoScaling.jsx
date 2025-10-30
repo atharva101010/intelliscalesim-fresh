@@ -1,367 +1,364 @@
-import { useEffect, useState } from 'react';
-import { Plus, Trash2, Power, PowerOff } from 'lucide-react';
-import toast from 'react-hot-toast';
-import Header from '../components/Header';
-import { scalingAPI, containerAPI } from '../services/api';
+import React, { useState, useEffect } from 'react';
+import api from '../services/api';
+import './AutoScaling.css';
 
 const AutoScaling = () => {
   const [policies, setPolicies] = useState([]);
+  const [showForm, setShowForm] = useState(false);
   const [containers, setContainers] = useState([]);
-  const [events, setEvents] = useState([]);
-  const [showModal, setShowModal] = useState(false);
-  const [policyForm, setPolicyForm] = useState({
-    name: '',
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  
+  const [formData, setFormData] = useState({
+    policy_name: '',
     container_id: '',
     min_replicas: 1,
-    max_replicas: 10,
+    max_replicas: 5,
+    initial_replicas: 1,
     target_cpu: 70,
-    target_memory: 80,
-    scale_up_threshold: 80,
-    scale_down_threshold: 30,
-    cooldown_period: 300,
+    cpu_scale_up_threshold: 80,
+    cpu_scale_down_threshold: 30,
+    target_memory: 75,
+    memory_scale_up_threshold: 85,
+    memory_scale_down_threshold: 40,
+    check_interval_seconds: 30,
   });
-  
+
   useEffect(() => {
-    fetchData();
+    fetchPolicies();
+    fetchContainers();
   }, []);
-  
-  const fetchData = async () => {
+
+  const fetchPolicies = async () => {
     try {
-      const [policiesRes, containersRes, eventsRes] = await Promise.all([
-        scalingAPI.listPolicies(),
-        containerAPI.list(),
-        scalingAPI.listEvents(),
-      ]);
-      
-      setPolicies(policiesRes.data);
-      setContainers(containersRes.data);
-      setEvents(eventsRes.data);
+      const response = await api.get('/api/auto-scaling/policies');
+      setPolicies(Array.isArray(response.data) ? response.data : []);
+      setError(null);
     } catch (error) {
-      console.error('Failed to fetch data:', error);
+      console.error('Error fetching policies:', error);
+      setError('Failed to load policies');
+      setPolicies([]);
     }
   };
-  
-  const handleCreatePolicy = async (e) => {
-    e.preventDefault();
-    
+
+  const fetchContainers = async () => {
     try {
-      await scalingAPI.createPolicy({
-        ...policyForm,
-        container_id: parseInt(policyForm.container_id),
+      const response = await api.get('/api/containers/');
+      setContainers(Array.isArray(response.data) ? response.data : []);
+      setError(null);
+    } catch (error) {
+      console.error('Error fetching containers:', error);
+      // Fallback to empty if auth fails
+      setContainers([]);
+    }
+  };
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: isNaN(value) ? value : parseFloat(value)
+    }));
+  };
+
+  const handleCreatePolicy = async () => {
+    if (!formData.policy_name || !formData.container_id) {
+      alert('Please fill in all required fields');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await api.post('/api/auto-scaling/policies/create', null, {
+        params: formData
       });
-      
-      toast.success('Scaling policy created!');
-      setShowModal(false);
-      setPolicyForm({
-        name: '',
+      alert('Policy created successfully!');
+      setFormData({
+        policy_name: '',
         container_id: '',
         min_replicas: 1,
-        max_replicas: 10,
+        max_replicas: 5,
+        initial_replicas: 1,
         target_cpu: 70,
-        target_memory: 80,
-        scale_up_threshold: 80,
-        scale_down_threshold: 30,
-        cooldown_period: 300,
+        cpu_scale_up_threshold: 80,
+        cpu_scale_down_threshold: 30,
+        target_memory: 75,
+        memory_scale_up_threshold: 85,
+        memory_scale_down_threshold: 40,
+        check_interval_seconds: 30,
       });
-      fetchData();
+      setShowForm(false);
+      fetchPolicies();
     } catch (error) {
-      toast.error('Failed to create policy');
+      alert('Error creating policy: ' + (error.response?.data?.detail || error.message));
+    } finally {
+      setLoading(false);
     }
   };
-  
-  const handleDeletePolicy = async (id) => {
-    if (!confirm('Are you sure you want to delete this policy?')) return;
-    
+
+  const handleStartScaling = async (policyId) => {
     try {
-      await scalingAPI.deletePolicy(id);
-      toast.success('Policy deleted');
-      fetchData();
+      await api.post(`/api/auto-scaling/policies/${policyId}/start`);
+      alert('Auto-scaling started!');
+      fetchPolicies();
     } catch (error) {
-      toast.error('Failed to delete policy');
+      alert('Error starting auto-scaling: ' + error.message);
     }
   };
-  
+
+  const handleStopScaling = async (policyId) => {
+    try {
+      await api.post(`/api/auto-scaling/policies/${policyId}/stop`);
+      alert('Auto-scaling stopped!');
+      fetchPolicies();
+    } catch (error) {
+      alert('Error stopping auto-scaling: ' + error.message);
+    }
+  };
+
   return (
-    <div className="h-full">
-      <Header 
-        title="Auto-Scaling"
-        subtitle="Configure automatic scaling policies for your containers"
-      />
-      
-      <div className="p-6">
-        {/* Create Policy Button */}
-        <div className="flex justify-between items-center mb-6">
-          <div>
-            <h3 className="text-lg font-semibold">Scaling Policies</h3>
-            <p className="text-sm text-gray-500">Manage auto-scaling configurations</p>
-          </div>
-          <button
-            onClick={() => setShowModal(true)}
-            className="btn-primary flex items-center space-x-2"
-          >
-            <Plus size={20} />
-            <span>Create Policy</span>
-          </button>
-        </div>
-        
-        {/* Policies List */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {policies.length === 0 ? (
-            <div className="card col-span-2 text-center py-12">
-              <p className="text-gray-500">No scaling policies configured yet</p>
-            </div>
-          ) : (
-            policies.map((policy) => (
-              <div key={policy.id} className="card">
-                <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <h4 className="text-lg font-bold">{policy.name}</h4>
-                    <p className="text-sm text-gray-500">Container ID: {policy.container_id}</p>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    {policy.enabled ? (
-                      <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-xs font-medium flex items-center space-x-1">
-                        <Power size={12} />
-                        <span>Enabled</span>
-                      </span>
-                    ) : (
-                      <span className="px-3 py-1 bg-gray-100 text-gray-800 rounded-full text-xs font-medium flex items-center space-x-1">
-                        <PowerOff size={12} />
-                        <span>Disabled</span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-                
-                <div className="space-y-2 mb-4 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Replicas:</span>
-                    <span className="font-medium">{policy.min_replicas} - {policy.max_replicas}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Target CPU:</span>
-                    <span className="font-medium">{policy.target_cpu}%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Target Memory:</span>
-                    <span className="font-medium">{policy.target_memory}%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Cooldown:</span>
-                    <span className="font-medium">{policy.cooldown_period}s</span>
-                  </div>
-                </div>
-                
-                <button
-                  onClick={() => handleDeletePolicy(policy.id)}
-                  className="w-full btn-secondary text-red-600 hover:bg-red-50 flex items-center justify-center space-x-2"
-                >
-                  <Trash2 size={16} />
-                  <span>Delete Policy</span>
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-        
-        {/* Scaling Events */}
-        <div className="card">
-          <h3 className="text-lg font-bold mb-4">Recent Scaling Events</h3>
-          
-          <div className="space-y-3">
-            {events.length === 0 ? (
-              <p className="text-gray-500 text-center py-8">No scaling events yet</p>
-            ) : (
-              events.map((event) => (
-                <div key={event.id} className="flex items-center justify-between py-3 border-b border-gray-200 last:border-0">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-2 h-2 rounded-full ${
-                      event.event_type === 'scale_up' ? 'bg-green-500' : 'bg-red-500'
-                    }`}></div>
-                    <div>
-                      <p className="font-medium">
-                        {event.event_type === 'scale_up' ? 'Scaled Up' : 'Scaled Down'}:
-                        {' '}{event.from_replicas} → {event.to_replicas} replicas
-                      </p>
-                      <p className="text-sm text-gray-500">{event.reason}</p>
-                    </div>
-                  </div>
-                  <span className="text-sm text-gray-500">
-                    {new Date(event.timestamp).toLocaleString()}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+    <div className="auto-scaling-container">
+      <h1>Auto-Scaling</h1>
+      <p>Configure automatic scaling policies for your containers</p>
+
+      {error && <div className="error-message">{error}</div>}
+
+      <div className="control-buttons">
+        <button 
+          className="btn btn-primary" 
+          onClick={() => setShowForm(!showForm)}
+        >
+          {showForm ? 'Cancel' : '+ Create Policy'}
+        </button>
       </div>
-      
-      {/* Create Policy Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 my-8">
-            <h3 className="text-2xl font-bold mb-4">Create Scaling Policy</h3>
+
+      {showForm && (
+        <div className="form-container">
+          <h2>Create Scaling Policy</h2>
+
+          <div className="form-section">
+            <h3>Basic Information</h3>
             
-            <form onSubmit={handleCreatePolicy} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Policy Name
-                </label>
-                <input
-                  type="text"
-                  value={policyForm.name}
-                  onChange={(e) => setPolicyForm({ ...policyForm, name: e.target.value })}
-                  className="input-field"
-                  placeholder="My Scaling Policy"
-                  required
-                />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Container
-                </label>
-                <select
-                  value={policyForm.container_id}
-                  onChange={(e) => setPolicyForm({ ...policyForm, container_id: e.target.value })}
-                  className="input-field"
-                  required
-                >
-                  <option value="">Select a container</option>
-                  {containers.map((container) => (
-                    <option key={container.id} value={container.id}>
-                      {container.name} ({container.image})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Min Replicas
-                  </label>
-                  <input
-                    type="number"
-                    value={policyForm.min_replicas}
-                    onChange={(e) => setPolicyForm({ ...policyForm, min_replicas: parseInt(e.target.value) })}
-                    className="input-field"
-                    min="1"
-                    required
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Max Replicas
-                  </label>
-                  <input
-                    type="number"
-                    value={policyForm.max_replicas}
-                    onChange={(e) => setPolicyForm({ ...policyForm, max_replicas: parseInt(e.target.value) })}
-                    className="input-field"
-                    min="1"
-                    required
-                  />
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Target CPU (%)
-                  </label>
-                  <input
-                    type="number"
-                    value={policyForm.target_cpu}
-                    onChange={(e) => setPolicyForm({ ...policyForm, target_cpu: parseFloat(e.target.value) })}
-                    className="input-field"
-                    min="0"
-                    max="100"
-                    required
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Target Memory (%)
-                  </label>
-                  <input
-                    type="number"
-                    value={policyForm.target_memory}
-                    onChange={(e) => setPolicyForm({ ...policyForm, target_memory: parseFloat(e.target.value) })}
-                    className="input-field"
-                    min="0"
-                    max="100"
-                    required
-                  />
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Scale Up Threshold (%)
-                  </label>
-                  <input
-                    type="number"
-                    value={policyForm.scale_up_threshold}
-                    onChange={(e) => setPolicyForm({ ...policyForm, scale_up_threshold: parseFloat(e.target.value) })}
-                    className="input-field"
-                    min="0"
-                    max="100"
-                    required
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Scale Down Threshold (%)
-                  </label>
-                  <input
-                    type="number"
-                    value={policyForm.scale_down_threshold}
-                    onChange={(e) => setPolicyForm({ ...policyForm, scale_down_threshold: parseFloat(e.target.value) })}
-                    className="input-field"
-                    min="0"
-                    max="100"
-                    required
-                  />
-                </div>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Cooldown Period (seconds)
-                </label>
+            <div className="form-group">
+              <label>Policy Name *</label>
+              <input
+                type="text"
+                name="policy_name"
+                value={formData.policy_name}
+                onChange={handleInputChange}
+                placeholder="e.g., My-Auto-Scaling"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Container *</label>
+              <select
+                name="container_id"
+                value={formData.container_id}
+                onChange={handleInputChange}
+              >
+                <option value="">Select a container</option>
+                {containers.map(container => (
+                  <option key={container.id} value={container.id}>
+                    {container.name || container.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="form-section">
+            <h3>Replica Configuration</h3>
+            
+            <div className="form-row">
+              <div className="form-group">
+                <label>Min Replicas (1-10) *</label>
                 <input
                   type="number"
-                  value={policyForm.cooldown_period}
-                  onChange={(e) => setPolicyForm({ ...policyForm, cooldown_period: parseInt(e.target.value) })}
-                  className="input-field"
-                  min="60"
-                  required
+                  name="min_replicas"
+                  value={formData.min_replicas}
+                  onChange={handleInputChange}
+                  min="1"
+                  max="10"
                 />
               </div>
-              
-              <div className="flex space-x-3 pt-4">
-                <button type="submit" className="flex-1 btn-primary">
-                  Create Policy
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="flex-1 btn-secondary"
-                >
-                  Cancel
-                </button>
+              <div className="form-group">
+                <label>Max Replicas (1-20) *</label>
+                <input
+                  type="number"
+                  name="max_replicas"
+                  value={formData.max_replicas}
+                  onChange={handleInputChange}
+                  min="1"
+                  max="20"
+                />
               </div>
-            </form>
+              <div className="form-group">
+                <label>Initial Replicas</label>
+                <input
+                  type="number"
+                  name="initial_replicas"
+                  value={formData.initial_replicas}
+                  onChange={handleInputChange}
+                  min="1"
+                  max="20"
+                />
+              </div>
+            </div>
           </div>
+
+          <div className="form-section">
+            <h3>CPU Metrics</h3>
+            
+            <div className="form-row">
+              <div className="form-group">
+                <label>Target CPU % *</label>
+                <input
+                  type="number"
+                  name="target_cpu"
+                  value={formData.target_cpu}
+                  onChange={handleInputChange}
+                  min="10"
+                  max="95"
+                />
+              </div>
+              <div className="form-group">
+                <label>CPU Scale Up Threshold % *</label>
+                <input
+                  type="number"
+                  name="cpu_scale_up_threshold"
+                  value={formData.cpu_scale_up_threshold}
+                  onChange={handleInputChange}
+                  min="10"
+                  max="95"
+                />
+              </div>
+              <div className="form-group">
+                <label>CPU Scale Down Threshold % *</label>
+                <input
+                  type="number"
+                  name="cpu_scale_down_threshold"
+                  value={formData.cpu_scale_down_threshold}
+                  onChange={handleInputChange}
+                  min="10"
+                  max="95"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="form-section">
+            <h3>Memory Metrics</h3>
+            
+            <div className="form-row">
+              <div className="form-group">
+                <label>Target Memory % *</label>
+                <input
+                  type="number"
+                  name="target_memory"
+                  value={formData.target_memory}
+                  onChange={handleInputChange}
+                  min="10"
+                  max="95"
+                />
+              </div>
+              <div className="form-group">
+                <label>Memory Scale Up Threshold % *</label>
+                <input
+                  type="number"
+                  name="memory_scale_up_threshold"
+                  value={formData.memory_scale_up_threshold}
+                  onChange={handleInputChange}
+                  min="10"
+                  max="95"
+                />
+              </div>
+              <div className="form-group">
+                <label>Memory Scale Down Threshold % *</label>
+                <input
+                  type="number"
+                  name="memory_scale_down_threshold"
+                  value={formData.memory_scale_down_threshold}
+                  onChange={handleInputChange}
+                  min="10"
+                  max="95"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="form-section">
+            <h3>Check Intervals</h3>
+            
+            <div className="form-group">
+              <label>Check Interval (30-60 seconds) *</label>
+              <input
+                type="number"
+                name="check_interval_seconds"
+                value={formData.check_interval_seconds}
+                onChange={handleInputChange}
+                min="30"
+                max="60"
+              />
+            </div>
+          </div>
+
+          <button 
+            className="btn btn-success" 
+            onClick={handleCreatePolicy}
+            disabled={loading}
+          >
+            {loading ? 'Creating...' : 'Create Policy'}
+          </button>
         </div>
       )}
+
+      <div className="policies-list">
+        <h2>Active Policies</h2>
+        {!policies || policies.length === 0 ? (
+          <p>No scaling policies created yet</p>
+        ) : (
+          policies.map(policy => (
+            <div key={policy.id} className="policy-card">
+              <div className="policy-header">
+                <h3>{policy.policy_name}</h3>
+                <span className={`status ${policy.is_active ? 'active' : 'inactive'}`}>
+                  {policy.is_active ? '🟢 Active' : '🔴 Inactive'}
+                </span>
+              </div>
+              
+              <div className="policy-details">
+                <div><strong>Container:</strong> {policy.container_id}</div>
+                <div><strong>Replicas:</strong> {policy.min_replicas}-{policy.max_replicas}</div>
+                <div><strong>CPU:</strong> {policy.cpu_scale_down_threshold}% - {policy.cpu_scale_up_threshold}%</div>
+                <div><strong>Memory:</strong> {policy.memory_scale_down_threshold}% - {policy.memory_scale_up_threshold}%</div>
+                <div><strong>Interval:</strong> {policy.check_interval_seconds}s</div>
+              </div>
+
+              <div className="policy-actions">
+                {policy.is_active ? (
+                  <button 
+                    className="btn btn-danger"
+                    onClick={() => handleStopScaling(policy.id)}
+                  >
+                    ⏹️ Stop
+                  </button>
+                ) : (
+                  <button 
+                    className="btn btn-success"
+                    onClick={() => handleStartScaling(policy.id)}
+                  >
+                    ▶️ Start
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 };
 
 export default AutoScaling;
+

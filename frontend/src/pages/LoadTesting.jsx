@@ -1,215 +1,193 @@
-import { useEffect, useState } from 'react';
-import { Play, Download } from 'lucide-react';
-import toast from 'react-hot-toast';
-import Header from '../components/Header';
-import { loadTestAPI } from '../services/api';
+import React, { useState } from 'react';
+import api from '../services/api';
+import './LoadTesting.css';
 
 const LoadTesting = () => {
-  const [tests, setTests] = useState([]);
+  const [selectedContainer, setSelectedContainer] = useState('demo-nginx-v2');
+  const [totalRequests, setTotalRequests] = useState(500);
+  const [concurrency, setConcurrency] = useState(25);
+  const [duration, setDuration] = useState(30);
   const [loading, setLoading] = useState(false);
-  const [testForm, setTestForm] = useState({
-    name: '',
-    target_url: '',
-    requests: 1000,
-    concurrency: 10,
-  });
-  
-  useEffect(() => {
-    fetchTests();
-  }, []);
-  
-  const fetchTests = async () => {
-    try {
-      const response = await loadTestAPI.list();
-      setTests(response.data);
-    } catch (error) {
-      console.error('Failed to fetch tests:', error);
+  const [testResults, setTestResults] = useState(null);
+  const [testHistory, setTestHistory] = useState([]);
+
+  const handleRunTest = async () => {
+    if (!selectedContainer) {
+      alert('Please select a container');
+      return;
     }
-  };
-  
-  const handleRunTest = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    
+
     try {
-      await loadTestAPI.run(testForm);
-      toast.success('Load test completed!');
-      setTestForm({
-        name: '',
-        target_url: '',
-        requests: 1000,
-        concurrency: 10,
+      setLoading(true);
+      const response = await api.post('/api/load-testing/', {
+        container_id: selectedContainer,
+        total_requests: parseInt(totalRequests),
+        concurrency: parseInt(concurrency),
+        duration: parseInt(duration)
       });
-      fetchTests();
+
+      setTestResults(response.data);
+      setTestHistory([response.data, ...testHistory]);
+      alert('Load test completed successfully!');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to run load test');
+      alert('Error running load test: ' + (error.response?.data?.detail || error.message));
+      console.error('Error:', error);
     } finally {
       setLoading(false);
     }
   };
-  
+
+  const containerOptions = [
+    { id: 'demo-nginx-v2', name: 'demo-nginx-v2 (nginx:alpine)', port: '80:8082' },
+    { id: 'demo-app-v1', name: 'demo-app-v1 (python:3.12)', port: 'Custom' },
+    { id: 'demo-db', name: 'demo-db (postgres:15)', port: '5432' }
+  ];
+
   return (
-    <div className="h-full">
-      <Header 
-        title="Load Testing"
-        subtitle="Test application performance under load"
-      />
-      
-      <div className="p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Test Configuration */}
-          <div className="card">
-            <h3 className="text-lg font-bold mb-4">Configure Load Test</h3>
-            
-            <form onSubmit={handleRunTest} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Test Name
-                </label>
-                <input
-                  type="text"
-                  value={testForm.name}
-                  onChange={(e) => setTestForm({ ...testForm, name: e.target.value })}
-                  className="input-field"
-                  placeholder="My Load Test"
-                  required
-                />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Target URL
-                </label>
-                <input
-                  type="url"
-                  value={testForm.target_url}
-                  onChange={(e) => setTestForm({ ...testForm, target_url: e.target.value })}
-                  className="input-field"
-                  placeholder="https://example.com"
-                  required
-                />
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Total Requests
-                  </label>
-                  <input
-                    type="number"
-                    value={testForm.requests}
-                    onChange={(e) => setTestForm({ ...testForm, requests: parseInt(e.target.value) })}
-                    className="input-field"
-                    min="1"
-                    required
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Concurrency
-                  </label>
-                  <input
-                    type="number"
-                    value={testForm.concurrency}
-                    onChange={(e) => setTestForm({ ...testForm, concurrency: parseInt(e.target.value) })}
-                    className="input-field"
-                    min="1"
-                    required
-                  />
-                </div>
-              </div>
-              
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full btn-primary flex items-center justify-center space-x-2 disabled:opacity-50"
-              >
-                <Play size={20} />
-                <span>{loading ? 'Running Test...' : 'Run Load Test'}</span>
-              </button>
-            </form>
+    <div className="load-testing-page">
+      <h1>🧪 Load Testing</h1>
+      <p>Test application performance under load</p>
+
+      {/* What is Load Testing */}
+      <div className="info-section">
+        <h2>What is Load Testing?</h2>
+        <p>Load testing simulates users interacting with your deployed application to answer:</p>
+        <ul>
+          <li>How many requests can the app handle at once?</li>
+          <li>When does the app slow down or crash?</li>
+          <li>How does CPU and memory usage change under load?</li>
+        </ul>
+      </div>
+
+      {/* Load Test Form */}
+      <div className="test-form">
+        <h2>Configure Load Test</h2>
+        
+        <div className="form-group">
+          <label>Select Deployed Application *</label>
+          <select value={selectedContainer} onChange={(e) => setSelectedContainer(e.target.value)}>
+            {containerOptions.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="form-row">
+          <div className="form-group">
+            <label>Total Requests (max 1000)</label>
+            <input
+              type="number"
+              min="1"
+              max="1000"
+              value={totalRequests}
+              onChange={(e) => setTotalRequests(e.target.value)}
+            />
+            <small>Total HTTP requests to send during the test</small>
           </div>
-          
-          {/* Test History */}
-          <div className="card">
-            <h3 className="text-lg font-bold mb-4">Test History</h3>
-            
-            <div className="space-y-4 max-h-96 overflow-y-auto">
-              {tests.length === 0 ? (
-                <p className="text-gray-500 text-center py-8">No tests run yet</p>
-              ) : (
-                tests.map((test) => (
-                  <div key={test.id} className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="font-semibold">{test.name}</h4>
-                      <span className="text-xs text-gray-500">
-                        {new Date(test.created_at).toLocaleString()}
-                      </span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div>
-                        <span className="text-gray-500">RPS:</span>
-                        <span className="font-medium ml-2">{test.requests_per_second?.toFixed(2)}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Success:</span>
-                        <span className="font-medium ml-2">{test.success_rate?.toFixed(2)}%</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Mean Time:</span>
-                        <span className="font-medium ml-2">{test.mean_response_time?.toFixed(2)}ms</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">P95:</span>
-                        <span className="font-medium ml-2">{test.p95_response_time?.toFixed(2)}ms</span>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+
+          <div className="form-group">
+            <label>Concurrency Level (max 50)</label>
+            <input
+              type="number"
+              min="1"
+              max="50"
+              value={concurrency}
+              onChange={(e) => setConcurrency(e.target.value)}
+            />
+            <small>Number of simultaneous requests</small>
+          </div>
+
+          <div className="form-group">
+            <label>Test Duration (1-60 seconds)</label>
+            <input
+              type="number"
+              min="1"
+              max="60"
+              value={duration}
+              onChange={(e) => setDuration(e.target.value)}
+            />
+            <small>Requests will be spread across this duration</small>
           </div>
         </div>
-        
-        {/* Latest Test Results */}
-        {tests.length > 0 && (
-          <div className="card mt-6">
-            <h3 className="text-lg font-bold mb-4">Latest Test Results</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-              <div className="text-center">
-                <p className="text-3xl font-bold text-primary-600">
-                  {tests[0].requests_per_second?.toFixed(2)}
-                </p>
-                <p className="text-sm text-gray-500 mt-1">Requests/sec</p>
-              </div>
-              
-              <div className="text-center">
-                <p className="text-3xl font-bold text-green-600">
-                  {tests[0].success_rate?.toFixed(2)}%
-                </p>
-                <p className="text-sm text-gray-500 mt-1">Success Rate</p>
-              </div>
-              
-              <div className="text-center">
-                <p className="text-3xl font-bold text-yellow-600">
-                  {tests[0].mean_response_time?.toFixed(2)}ms
-                </p>
-                <p className="text-sm text-gray-500 mt-1">Mean Response</p>
-              </div>
-              
-              <div className="text-center">
-                <p className="text-3xl font-bold text-red-600">
-                  {tests[0].p99_response_time?.toFixed(2)}ms
-                </p>
-                <p className="text-sm text-gray-500 mt-1">P99 Latency</p>
-              </div>
+
+        <button 
+          className="btn" 
+          onClick={handleRunTest}
+          disabled={loading}
+        >
+          {loading ? '⏳ Running Test...' : '▶️ Run Load Test'}
+        </button>
+      </div>
+
+      {/* Results */}
+      {testResults && (
+        <div className="test-results">
+          <h2>📊 Test Results</h2>
+          
+          <div className="metrics-grid">
+            <div className="metric">
+              <div className="metric-value">{testResults.results?.total_requests || 0}</div>
+              <div className="metric-label">Total Requests</div>
+            </div>
+
+            <div className="metric">
+              <div className="metric-value">{testResults.results?.success_rate || 0}%</div>
+              <div className="metric-label">Success Rate</div>
+            </div>
+
+            <div className="metric">
+              <div className="metric-value">{testResults.results?.avg_response_time || 0}ms</div>
+              <div className="metric-label">Avg Response Time</div>
+            </div>
+
+            <div className="metric">
+              <div className="metric-value">{testResults.results?.requests_per_second || 0}</div>
+              <div className="metric-label">Requests/Second</div>
+            </div>
+
+            <div className="metric">
+              <div className="metric-value">{testResults.results?.min_response_time || 0}ms</div>
+              <div className="metric-label">Min Response Time</div>
+            </div>
+
+            <div className="metric">
+              <div className="metric-value">{testResults.results?.max_response_time || 0}ms</div>
+              <div className="metric-label">Max Response Time</div>
             </div>
           </div>
-        )}
-      </div>
+
+          {testResults.results?.errors && (
+            <div className="errors-section">
+              <h3>Errors</h3>
+              <ul>
+                <li>Timeouts: {testResults.results.errors.timeout}</li>
+                <li>Connection Errors: {testResults.results.errors.connection_error}</li>
+                <li>Server Errors: {testResults.results.errors.server_error}</li>
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Test History */}
+      {testHistory.length > 0 && (
+        <div className="test-history">
+          <h2>📋 Test History</h2>
+          {testHistory.map((test, idx) => (
+            <div key={idx} className="history-item">
+              <div className="history-header">
+                <span className="history-title">{test.container_id}</span>
+                <span className="history-date">{new Date(test.created_at).toLocaleString()}</span>
+              </div>
+              <div className="history-details">
+                <span>Requests: {test.total_requests}</span>
+                <span>Concurrency: {test.concurrency}</span>
+                <span>Success Rate: {test.results?.success_rate || 0}%</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

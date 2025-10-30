@@ -1,161 +1,160 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { UserPlus } from 'lucide-react';
-import toast from 'react-hot-toast';
-import { authAPI } from '../services/api';
+import React, { useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import api from '../services/api';
+import './Auth.css';
 
 const Register = () => {
-  const navigate = useNavigate();
   const [formData, setFormData] = useState({
-    username: '',
     email: '',
+    username: '',
     password: '',
-    confirmPassword: '',
-    role: 'student',
+    confirm_password: '',
+    role: 'student'
   });
   const [loading, setLoading] = useState(false);
-  
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const navigate = useNavigate();
+
   const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
   };
-  
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (formData.password !== formData.confirmPassword) {
-      toast.error('Passwords do not match');
+    setError('');
+    setSuccess('');
+
+    // Validation
+    if (!formData.email || !formData.username || !formData.password || !formData.confirm_password) {
+      setError('All fields are required');
       return;
     }
-    
-    setLoading(true);
-    
+
+    if (formData.password !== formData.confirm_password) {
+      setError('Passwords do not match');
+      return;
+    }
+
+    if (formData.password.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
+    }
+
     try {
-      await authAPI.register({
-        username: formData.username,
+      setLoading(true);
+      const response = await api.post('/api/auth/register', {
         email: formData.email,
+        username: formData.username,
         password: formData.password,
-        role: formData.role,
+        role: formData.role
       });
-      
-      toast.success('Registration successful! Please login.');
-      navigate('/login');
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Registration failed');
+
+      setSuccess('Registration successful! Redirecting to login...');
+      setTimeout(() => {
+        navigate('/login');
+      }, 2000);
+    } catch (err) {
+      const errorMsg = err.response?.data?.detail || err.message;
+      setError(typeof errorMsg === 'string' ? errorMsg : 'Registration failed');
+      console.error('Registration error:', err);
     } finally {
       setLoading(false);
     }
   };
-  
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-xl p-8">
-          {/* Logo */}
-          <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-100 rounded-full mb-4">
-              <UserPlus className="text-primary-600" size={32} />
-            </div>
-            <h1 className="text-3xl font-bold text-gray-900">Create Account</h1>
-            <p className="text-gray-500 mt-2">Join IntelliScaleSim today</p>
-          </div>
-          
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Username
-              </label>
-              <input
-                type="text"
-                name="username"
-                value={formData.username}
-                onChange={handleChange}
-                className="input-field"
-                placeholder="Choose a username"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Email Address
-              </label>
-              <input
-                type="email"
-                name="email"
-                value={formData.email}
-                onChange={handleChange}
-                className="input-field"
-                placeholder="Enter your email"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Role
-              </label>
-              <select
-                name="role"
-                value={formData.role}
-                onChange={handleChange}
-                className="input-field"
-              >
-                <option value="student">Student</option>
-                <option value="teacher">Teacher</option>
-              </select>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Password
-              </label>
-              <input
-                type="password"
-                name="password"
-                value={formData.password}
-                onChange={handleChange}
-                className="input-field"
-                placeholder="Create a password"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Confirm Password
-              </label>
-              <input
-                type="password"
-                name="confirmPassword"
-                value={formData.confirmPassword}
-                onChange={handleChange}
-                className="input-field"
-                placeholder="Confirm your password"
-                required
-              />
-            </div>
-            
-            <button
-              type="submit"
+    <div className="auth-container">
+      <div className="auth-box">
+        <h1 className="auth-title">IntelliScaleSim</h1>
+        <h2 className="auth-subtitle">Create Account</h2>
+
+        {error && <div className="error-message">{error}</div>}
+        {success && <div className="success-message">{success}</div>}
+
+        <form onSubmit={handleSubmit} className="auth-form">
+          <div className="form-group">
+            <label>Email Address</label>
+            <input
+              type="email"
+              name="email"
+              value={formData.email}
+              onChange={handleChange}
+              placeholder="Enter your email"
               disabled={loading}
-              className="w-full btn-primary disabled:opacity-50"
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Username</label>
+            <input
+              type="text"
+              name="username"
+              value={formData.username}
+              onChange={handleChange}
+              placeholder="Choose a username"
+              disabled={loading}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Password</label>
+            <input
+              type="password"
+              name="password"
+              value={formData.password}
+              onChange={handleChange}
+              placeholder="Enter password"
+              disabled={loading}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Confirm Password</label>
+            <input
+              type="password"
+              name="confirm_password"
+              value={formData.confirm_password}
+              onChange={handleChange}
+              placeholder="Confirm password"
+              disabled={loading}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Register as</label>
+            <select
+              name="role"
+              value={formData.role}
+              onChange={handleChange}
+              disabled={loading}
             >
-              {loading ? 'Creating account...' : 'Create Account'}
-            </button>
-          </form>
-          
-          {/* Login link */}
-          <p className="text-center text-sm text-gray-600 mt-6">
-            Already have an account?{' '}
-            <Link to="/login" className="text-primary-600 hover:text-primary-700 font-medium">
-              Sign in
-            </Link>
-          </p>
-        </div>
+              <option value="student">Student</option>
+              <option value="teacher">Teacher</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+
+          <button
+            type="submit"
+            className="auth-button"
+            disabled={loading}
+          >
+            {loading ? 'Registering...' : 'Register'}
+          </button>
+        </form>
+
+        <p className="auth-link">
+          Already have an account? <Link to="/login">Login here</Link>
+        </p>
       </div>
     </div>
   );
 };
 
 export default Register;
+

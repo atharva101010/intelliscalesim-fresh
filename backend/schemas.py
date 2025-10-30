@@ -94,16 +94,24 @@ class LoadTestCreate(BaseModel):
     concurrency: int = Field(default=10, ge=1)
     duration: Optional[int] = None
 
+# Load Testing Schemas
+class LoadTestCreate(BaseModel):
+    container_id: int
+    requests: int
+    concurrency: int
+    duration: int
+
 class LoadTestResponse(BaseModel):
     id: int
     container_id: int
     requests: int
     concurrency: int
-    duration: Optional[int]
+    duration: int
     status: str
-    results: Optional[Dict] = None
+    results: Optional[dict] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
+    user_id: int
 
     class Config:
         from_attributes = True

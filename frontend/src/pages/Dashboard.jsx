@@ -1,112 +1,174 @@
-import { useEffect, useState } from 'react';
-import { Container, Activity, Zap, DollarSign } from 'lucide-react';
-import Header from '../components/Header';
-import FeatureCard from '../components/FeatureCard';
-import { containerAPI } from '../services/api';
-import useAuthStore from '../stores/authStore';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import api from '../services/api';
+import './Dashboard.css';
 
 const Dashboard = () => {
-  const user = useAuthStore((state) => state.user);
-  const [stats, setStats] = useState({
-    containers: 0,
-    running: 0,
-    stopped: 0,
-  });
-  
+  const [containers, setContainers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const navigate = useNavigate();
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+
   useEffect(() => {
-    fetchStats();
+    fetchContainers();
   }, []);
-  
-  const fetchStats = async () => {
+
+  const fetchContainers = async () => {
     try {
-      const response = await containerAPI.list();
-      const containers = response.data;
-      
-      setStats({
-        containers: containers.length,
-        running: containers.filter(c => c.status === 'running').length,
-        stopped: containers.filter(c => c.status !== 'running').length,
-      });
-    } catch (error) {
-      console.error('Failed to fetch stats:', error);
+      setLoading(true);
+      const response = await api.get('/api/containers/');
+      setContainers(Array.isArray(response.data) ? response.data : []);
+      setError('');
+    } catch (err) {
+      console.error('Error fetching containers:', err);
+      setError('Failed to load containers');
+      setContainers([]);
+    } finally {
+      setLoading(false);
     }
   };
-  
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    navigate('/login');
+  };
+
+  const handleNavigate = (path) => {
+    navigate(path);
+  };
+
+  // Helper function to safely get container ID
+  const getContainerId = (container) => {
+    if (!container.id) return 'N/A';
+    if (typeof container.id === 'string') {
+      return container.id.substring(0, 12);
+    }
+    return String(container.id).substring(0, 12);
+  };
+
   return (
-    <div className="h-full">
-      <Header 
-        title={`Welcome back, ${user?.username}!`}
-        subtitle="Here's what's happening with your containers today"
-      />
-      
-      <div className="p-6">
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <FeatureCard
-            icon={Container}
-            title="Total Containers"
-            value={stats.containers}
-            change={12}
-            color="primary"
-          />
-          <FeatureCard
-            icon={Activity}
-            title="Running Containers"
-            value={stats.running}
-            change={5}
-            color="green"
-          />
-          <FeatureCard
-            icon={Zap}
-            title="Auto-Scaling Policies"
-            value={0}
-            change={0}
-            color="yellow"
-          />
-          <FeatureCard
-            icon={DollarSign}
-            title="Estimated Cost"
-            value="$0.00"
-            change={-8}
-            color="red"
-          />
+    <div className="dashboard">
+      {/* Header */}
+      <header className="dashboard-header">
+        <div className="header-left">
+          <h1>IntelliScaleSim</h1>
         </div>
-        
-        {/* Quick Actions */}
-        <div className="card mb-8">
-          <h3 className="text-lg font-bold mb-4">Quick Actions</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <button className="btn-primary flex items-center justify-center space-x-2">
-              <Container size={20} />
-              <span>Deploy Container</span>
-            </button>
-            <button className="btn-primary flex items-center justify-center space-x-2">
-              <Activity size={20} />
-              <span>Run Load Test</span>
-            </button>
-            <button className="btn-primary flex items-center justify-center space-x-2">
-              <DollarSign size={20} />
-              <span>Calculate Costs</span>
-            </button>
-          </div>
+        <div className="header-right">
+          <span className="user-info">Welcome, {user.username || 'User'}</span>
+          <button onClick={handleLogout} className="btn btn-logout">
+            Logout
+          </button>
         </div>
-        
-        {/* Recent Activity */}
-        <div className="card">
-          <h3 className="text-lg font-bold mb-4">Recent Activity</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between py-3 border-b border-gray-200">
-              <div className="flex items-center space-x-3">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-gray-700">System initialized successfully</span>
+      </header>
+
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <nav className="nav-menu">
+          <button 
+            className="nav-item"
+            onClick={() => handleNavigate('/dashboard')}
+          >
+            📊 Dashboard
+          </button>
+          <button 
+            className="nav-item"
+            onClick={() => handleNavigate('/containers')}
+          >
+            🐳 Containers
+          </button>
+          <button 
+            className="nav-item"
+            onClick={() => handleNavigate('/auto-scaling')}
+          >
+            ⚖️ Auto-Scaling
+          </button>
+          <button 
+            className="nav-item"
+            onClick={() => handleNavigate('/load-testing')}
+          >
+            🧪 Load Testing
+          </button>
+          <button 
+            className="nav-item"
+            onClick={() => handleNavigate('/billing')}
+          >
+            💰 Billing
+          </button>
+        </nav>
+      </aside>
+
+      {/* Main Content */}
+      <main className="main-content">
+        <div className="content-wrapper">
+          <h2>Dashboard Overview</h2>
+          
+          {error && <div className="error-message">{error}</div>}
+
+          {loading ? (
+            <div className="loading">Loading containers...</div>
+          ) : (
+            <div className="dashboard-grid">
+              {/* Summary Cards */}
+              <div className="card summary-card">
+                <h3>Total Containers</h3>
+                <p className="large-number">{containers.length}</p>
               </div>
-              <span className="text-sm text-gray-500">Just now</span>
+
+              <div className="card summary-card">
+                <h3>Active</h3>
+                <p className="large-number">
+                  {containers.filter(c => c.status === 'running').length}
+                </p>
+              </div>
+
+              <div className="card summary-card">
+                <h3>Stopped</h3>
+                <p className="large-number">
+                  {containers.filter(c => c.status !== 'running').length}
+                </p>
+              </div>
+
+              {/* Containers List */}
+              <div className="card full-width">
+                <h3>Recent Containers</h3>
+                {containers.length === 0 ? (
+                  <p>No containers found</p>
+                ) : (
+                  <table className="containers-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>ID</th>
+                        <th>Status</th>
+                        <th>Image</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {containers.slice(0, 5).map((container, idx) => (
+                        <tr key={idx}>
+                          <td>{container.name || 'N/A'}</td>
+                          <td>{getContainerId(container)}</td>
+                          <td>
+                            <span className={`status ${container.status || 'unknown'}`}>
+                              {container.status || 'unknown'}
+                            </span>
+                          </td>
+                          <td>{container.image || 'N/A'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
-      </div>
+      </main>
     </div>
   );
 };
 
 export default Dashboard;
+

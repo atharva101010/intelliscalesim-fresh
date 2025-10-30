@@ -1,13 +1,16 @@
-import { useState, useEffect } from 'react';
-import { Plus } from 'lucide-react';
-import toast from 'react-hot-toast';
-import { containerAPI } from '../services/api';
-import DeployModal from '../components/DeployModal';
+import React, { useState, useEffect } from 'react';
+import api from '../services/api';
+import './Containers.css';
 
 const Containers = () => {
   const [containers, setContainers] = useState([]);
-  const [showDeployModal, setShowDeployModal] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [formData, setFormData] = useState({
+    image: '',
+    name: '',
+    ports: '8000:8000'
+  });
 
   useEffect(() => {
     fetchContainers();
@@ -16,148 +19,135 @@ const Containers = () => {
   const fetchContainers = async () => {
     try {
       setLoading(true);
-      const response = await containerAPI.list();
-      setContainers(response.data || []);
+      const response = await api.get('/api/containers/');
+      setContainers(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
       console.error('Error fetching containers:', error);
-      toast.error('Failed to fetch containers');
+      alert('Failed to load containers');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDeploy = async (formData) => {
+  // Helper function to safely get container ID
+  const getContainerId = (container) => {
+    if (!container.id) return 'N/A';
+    if (typeof container.id === 'string') {
+      return container.id.substring(0, 12);
+    }
+    return String(container.id).substring(0, 12);
+  };
+
+  const handleDeploy = async () => {
+    if (!formData.image || !formData.name) {
+      alert('Please fill all required fields');
+      return;
+    }
+
     try {
-      console.log('Deploying with data:', formData);
-      const response = await containerAPI.deploy(formData);
-      console.log('Deploy response:', response.data);
-      toast.success('Container deployed successfully!');
-      setShowDeployModal(false);
-      await fetchContainers();
+      await api.post('/api/containers/deploy', formData);
+      alert('Container deployed successfully!');
+      setFormData({ image: '', name: '', ports: '8000:8000' });
+      setShowForm(false);
+      fetchContainers();
     } catch (error) {
-      console.error('Deploy error:', error);
-      const errorMsg = error.response?.data?.detail || error.message || 'Failed to deploy container';
-      toast.error(errorMsg);
+      alert('Error deploying container: ' + (error.response?.data?.detail || error.message));
     }
   };
 
   const handleStop = async (id) => {
     try {
-      await containerAPI.stop(id);
-      toast.success('Container stopped');
-      await fetchContainers();
+      await api.post(`/api/containers/${id}/stop`);
+      alert('Container stopped!');
+      fetchContainers();
     } catch (error) {
-      toast.error('Failed to stop container');
+      alert('Error stopping container: ' + error.message);
     }
   };
 
   const handleStart = async (id) => {
     try {
-      await containerAPI.start(id);
-      toast.success('Container started');
-      await fetchContainers();
+      await api.post(`/api/containers/${id}/start`);
+      alert('Container started!');
+      fetchContainers();
     } catch (error) {
-      toast.error('Failed to start container');
+      alert('Error starting container: ' + error.message);
     }
   };
 
   const handleDelete = async (id) => {
-    if (!confirm('Are you sure?')) return;
-    try {
-      await containerAPI.delete(id);
-      toast.success('Container deleted');
-      await fetchContainers();
-    } catch (error) {
-      toast.error('Failed to delete container');
+    if (window.confirm('Are you sure you want to delete this container?')) {
+      try {
+        await api.delete(`/api/containers/${id}`);
+        alert('Container deleted!');
+        fetchContainers();
+      } catch (error) {
+        alert('Error deleting container: ' + error.message);
+      }
     }
   };
 
   return (
-    <div className="p-8">
-      <div className="mb-8 flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Container Management</h1>
-          <p className="text-gray-600 mt-2">Deploy and manage your Docker containers</p>
-        </div>
-        <button
-          onClick={() => setShowDeployModal(true)}
-          className="flex items-center gap-2 bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700"
-        >
-          <Plus size={20} />
-          Deploy Container
-        </button>
-      </div>
+    <div className="containers-page">
+      <h1>🐳 Container Management</h1>
+      
+      <button 
+        className="btn btn-primary"
+        onClick={() => setShowForm(!showForm)}
+      >
+        {showForm ? 'Cancel' : '+ Deploy Container'}
+      </button>
 
-      {showDeployModal && (
-        <DeployModal
-          onClose={() => setShowDeployModal(false)}
-          onDeploy={handleDeploy}
-        />
+      {showForm && (
+        <div className="deploy-form">
+          <h2>Deploy New Container</h2>
+          <input
+            type="text"
+            placeholder="Image (e.g., nginx:alpine)"
+            value={formData.image}
+            onChange={(e) => setFormData({...formData, image: e.target.value})}
+          />
+          <input
+            type="text"
+            placeholder="Container Name"
+            value={formData.name}
+            onChange={(e) => setFormData({...formData, name: e.target.value})}
+          />
+          <input
+            type="text"
+            placeholder="Ports (e.g., 8000:8000)"
+            value={formData.ports}
+            onChange={(e) => setFormData({...formData, ports: e.target.value})}
+          />
+          <button onClick={handleDeploy} className="btn btn-success">Deploy</button>
+        </div>
       )}
 
       {loading ? (
-        <div className="text-center py-12">
-          <p className="text-gray-500">Loading containers...</p>
-        </div>
-      ) : containers.length === 0 ? (
-        <div className="bg-white rounded-lg shadow p-12 text-center">
-          <p className="text-gray-500 mb-4">No containers deployed yet</p>
-          <button
-            onClick={() => setShowDeployModal(true)}
-            className="text-primary-600 hover:text-primary-700 font-medium"
-          >
-            Deploy your first container!
-          </button>
-        </div>
+        <p>Loading containers...</p>
       ) : (
-        <div className="grid gap-4">
-          {containers.map((container) => (
-            <div key={container.id} className="bg-white rounded-lg shadow p-6">
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">{container.name}</h3>
-                  <p className="text-sm text-gray-600">{container.image}</p>
+        <div className="containers-list">
+          {containers.length === 0 ? (
+            <p>No containers found. Deploy one to get started!</p>
+          ) : (
+            containers.map((container, idx) => (
+              <div key={idx} className="container-card">
+                <h3>{container.name || 'Unnamed'}</h3>
+                <p>ID: {getContainerId(container)}</p>
+                <p>Image: {container.image || 'N/A'}</p>
+                <p>Status: <span className={`status ${container.status || 'unknown'}`}>{container.status || 'unknown'}</span></p>
+                
+                <div className="actions">
+                  {container.status === 'running' ? (
+                    <button className="btn btn-danger" onClick={() => handleStop(container.id)}>Stop</button>
+                  ) : (
+                    <button className="btn btn-success" onClick={() => handleStart(container.id)}>Start</button>
+                  )}
+                  <button className="btn btn-danger" onClick={() => handleDelete(container.id)}>Delete</button>
                 </div>
-                <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                  container.status === 'running'
-                    ? 'bg-green-100 text-green-800'
-                    : 'bg-red-100 text-red-800'
-                }`}>
-                  {container.status}
-                </span>
               </div>
-
-              {container.ports && (
-                <p className="text-sm text-gray-600 mb-4">
-                  Port: <span className="font-mono">{container.ports}</span>
-                </p>
-              )}
-
-              <div className="flex gap-2">
-                {container.status === 'running' ? (
-                  <button
-                    onClick={() => handleStop(container.id)}
-                    className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 text-sm"
-                  >
-                    Stop
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => handleStart(container.id)}
-                    className="px-3 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 text-sm"
-                  >
-                    Start
-                  </button>
-                )}
-                <button
-                  onClick={() => handleDelete(container.id)}
-                  className="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 text-sm"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       )}
     </div>

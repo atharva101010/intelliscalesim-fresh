@@ -1,0 +1,172 @@
+.billing-page {
+  padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.billing-page h1 {
+  color: #333;
+  margin-bottom: 20px;
+}
+
+.billing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.billing-card {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  border-top: 4px solid #667eea;
+}
+
+.billing-card h3 {
+  color: #667eea;
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.billing-card .amount {
+  font-size: 28px;
+  font-weight: bold;
+  color: #333;
+  margin: 10px 0;
+}
+
+.billing-card .currency {
+  font-size: 14px;
+  color: #999;
+}
+
+.billing-card p {
+  margin: 8px 0;
+  color: #666;
+  font-size: 13px;
+}
+
+.estimate-form {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  margin-bottom: 30px;
+}
+
+.estimate-form h2 {
+  color: #333;
+  margin-top: 0;
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 5px rgba(102, 126, 234, 0.2);
+}
+
+.estimate-btn {
+  padding: 10px 20px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.3s;
+}
+
+.estimate-btn:hover {
+  background: #5568d3;
+}
+
+.billing-table {
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.billing-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.billing-table th {
+  background: #f5f7fa;
+  padding: 15px;
+  text-align: left;
+  color: #333;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 2px solid #e1e8ed;
+}
+
+.billing-table td {
+  padding: 15px;
+  border-bottom: 1px solid #e1e8ed;
+  font-size: 13px;
+  color: #666;
+}
+
+.billing-table tr:hover {
+  background: #f9fafb;
+}
+
+.provider-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  background: #e8f0fe;
+  color: #1f2937;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cost-high {
+  color: #dc3545;
+  font-weight: 600;
+}
+
+.cost-medium {
+  color: #ffc107;
+  font-weight: 600;
+}
+
+.cost-low {
+  color: #28a745;
+  font-weight: 600;
+}
+
+.no-data {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
