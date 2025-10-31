@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import './Auth.css';
 
-const Login = () => {
+const Login = ({ setIsLoggedIn }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,10 +21,14 @@ const Login = () => {
         password
       });
 
-      if (response.data.access_token) {
-        localStorage.setItem('token', response.data.access_token);
-        localStorage.setItem('user', JSON.stringify(response.data.user));
+      if (response.data.ok) {
+        localStorage.setItem('userId', response.data.id);
+        localStorage.setItem('userEmail', response.data.email);
+        localStorage.setItem('isLoggedIn', 'true');
+        setIsLoggedIn(true);
         navigate('/dashboard');
+      } else {
+        setError('Login failed - invalid response');
       }
     } catch (err) {
       setError(err.response?.data?.detail || 'Login failed');
@@ -76,4 +80,3 @@ const Login = () => {
 };
 
 export default Login;
-
